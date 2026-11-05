@@ -1,0 +1,114 @@
+name: "Terraform lab7 CI/CD"
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: lab7-terraform-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  GOOGLE_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  TF_STATE_BUCKET: ${{ vars.GCP_STATE_BUCKET }}
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar variables del repositorio
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SA_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$GOOGLE_PROJECT" && test "$GOOGLE_PROJECT" != '$' || { echo "::error::GCP_PROJECT_ID inválido"; exit 1; }
+          test -n "$TF_STATE_BUCKET" && test "$TF_STATE_BUCKET" != '$' || { echo "::error::GCP_STATE_BUCKET inválido"; exit 1; }
+          [[ "$SA_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.iam\.gserviceaccount\.com$ ]] || { echo "::error::GCP_SERVICE_ACCOUNT inválido"; exit 1; }
+          [[ "$WIF_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$ ]] || { echo "::error::Falta GCP_WIF_PROVIDER o tiene formato inválido"; exit 1; }
+
+      - name: Google Cloud OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Inicializar backend GCS
+        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Validar formato
+        run: terraform fmt -check -recursive
+
+      - name: Validar configuración
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -no-color -lock-timeout=60s -var="project_id=${GOOGLE_PROJECT}"
+
+  apply:
+    needs: plan # Agregamos una dependencia sana para garantizar que pase el 'plan' antes de desplegar
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar variables del repositorio
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SA_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$GOOGLE_PROJECT" && test "$GOOGLE_PROJECT" != '$' || { echo "::error::GCP_PROJECT_ID inválido"; exit 1; }
+          test -n "$TF_STATE_BUCKET" && test "$TF_STATE_BUCKET" != '$' || { echo "::error::GCP_STATE_BUCKET inválido"; exit 1; }
+          [[ "$SA_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.iam\.gserviceaccount\.com$ ]] || { echo "::error::GCP_SERVICE_ACCOUNT inválido"; exit 1; }
+          [[ "$WIF_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$ ]] || { echo "::error::Falta GCP_WIF_PROVIDER o tiene formato inválido"; exit 1; }
+
+      - name: Google Cloud OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+
+      - name: Inicializar backend GCS
+        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Validar formato
+        run: terraform fmt -check -recursive
+
+      - name: Validar configuración
+        run: terraform validate
+
+      - name: Revisar plan de main
+        run: terraform plan -input=false -no-color -lock-timeout=60s -var="project_id=${GOOGLE_PROJECT}"
+
+      - name: Aplicar infraestructura
+        run: terraform apply -input=false -auto-approve -lock-timeout=60s -var="project_id=${GOOGLE_PROJECT}"
