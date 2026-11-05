@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+*.json.credentials
+.lab7-setup.env
+credentials*.json
+gha-creds-*.json
